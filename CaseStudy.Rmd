@@ -1,0 +1,426 @@
+---
+title: "Bayesian Data Analysis Case Study"
+author: "Laura Escobar Crespo"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Dataset
+
+```{r}
+data = read.csv("fake_or_real_news.csv",sep=",")
+
+names(data)
+
+dim(data)
+
+```
+
+The dataset that is used for this project can be found at Kaggle <https://www.kaggle.com/datasets/nopdev/real-and-fake-news-dataset?select=news.csv>. The dataset consist in a recopilation of fake and real news.
+
+The dimensions are shown above: 4 features (columns) and 6335 observations (rows). The features are an id, the title of the new, the text of the new and a label indicating if it is fake or real.
+
+As it would be computationally impossible for my computer to work with the whole dataset (it is too large), I worked with a smaller part of it, that is not as large but significant enough to get satisfactory results. 
+
+```{r}
+
+sub_data = data[sample(nrow(data),800),]
+
+```
+
+
+## Objective
+
+The Bayes Theorem is used to detect if a new is fake or real.
+
+In this assignment two approaches where tried regarding the dataset: one using the new itself (the text) and the other using the title of the new, to find if it is easy to detect a fake new by its title or by its content.
+
+
+## Detect news by its content
+
+In this part it is calculated a Bayesian Data analysis for the texts of the news.
+
+### Prepare and Clean the Corpus
+
+```{r}
+library(tm)
+corpus = Corpus(VectorSource(sub_data$text))
+inspect(corpus[1:1])
+
+```
+
+As we can see the text provided is not cleanned so before anything else, the data has to suffer some transformations.
+
+First of all, I transform all the letters into lower case.
+
+```{r}
+clean_corpus = tm_map(corpus, tolower)
+
+```
+
+The following steps are to remobe numbers, punctuation, stopwords (as the news are in english, it is specified for english words) and if there are excess of white spaces:
+
+```{r}
+clean_corpus = tm_map(clean_corpus, removeNumbers)
+
+clean_corpus = tm_map(clean_corpus, removePunctuation)
+
+clean_corpus = tm_map(clean_corpus, removeWords,
+                       stopwords("en"))
+
+clean_corpus = tm_map(clean_corpus, stripWhitespace)
+
+inspect(clean_corpus[1:1])
+
+
+``` 
+
+Though the corpus/text looks much better, in this dataset appears "weird characters" that must be removed as they do not make sense and do not belong to the english lexic.
+
+
+```{r}
+toSpace = content_transformer(function(x, pattern) gsub(pattern, " ", x))
+
+clean_corpus = tm_map(clean_corpus, toSpace, "â") 
+clean_corpus = tm_map(clean_corpus, toSpace, "~")
+clean_corpus = tm_map(clean_corpus, toSpace, "€")
+clean_corpus = tm_map(clean_corpus, toSpace, "™")
+clean_corpus = tm_map(clean_corpus, toSpace, "#")
+clean_corpus = tm_map(clean_corpus, toSpace, "@")
+clean_corpus = tm_map(clean_corpus, toSpace, "œ")
+clean_corpus = tm_map(clean_corpus, toSpace, "\u009d") #to remove some \
+clean_corpus = tm_map(clean_corpus, toSpace, "“")
+clean_corpus = tm_map(clean_corpus, toSpace, "”")
+
+inspect(clean_corpus[1:1])
+
+```
+
+Now the corpus looks much better, the only thing that it is needed is to remove the excess of white spaces caused when a "weird character" is removed.
+
+```{r}
+clean_corpus = tm_map(clean_corpus, stripWhitespace)
+inspect(clean_corpus[1:1])
+
+```
+
+### WordClouds
+
+To have a visualization of the different words included in the fake and real news, the indices of both of them are calculated and then the wordclouds are shown.
+
+```{r}
+fake_indices = which(sub_data$label == "FAKE")
+real_indices = which(sub_data$label ==  "REAL")
+
+library(wordcloud)
+
+wordcloud(clean_corpus[fake_indices], min.freq=180, colors=brewer.pal(8, "Dark2"))
+
+wordcloud(clean_corpus[real_indices], min.freq=180, colors=brewer.pal(8, "Dark2"))
+
+
+```
+
+### Creating the training and the test
+
+The dataset is divided into train and test (75% trainning and 25% for test) as well as the cleanned corpus.
+
+```{r}
+
+nobs=dim(sub_data)[1]
+train = 1:round(nobs*0.75)
+test = (round(nobs*0.75)+1):nobs
+data_train = sub_data[train,]
+data_test = sub_data[test,]
+
+corpus_train <- clean_corpus[train]
+corpus_test <- clean_corpus[test]
+
+```
+
+### Calculation of the frequency of the terms
+
+Using DocumentTermMatrix, we create a sparse matrix data structure in which the rows of the matrix refer to document and the columns refer to words.
+
+```{r}
+data_DTM = DocumentTermMatrix(clean_corpus)
+inspect(data_DTM[1:4, 3:10])
+```
+
+Now, the matrix is divided into test and training rows:
+
+```{r}
+data_DTM_train = data_DTM[train,]
+data_DTM_test = data_DTM[test,]
+
+```
+
+### Identify frequently used words
+
+The classifier does not to be worried with words that do not appear more than 5 times.
+
+```{r}
+five_times_words = findFreqTerms(data_DTM_train, 5)
+length(five_times_words)
+
+five_times_words[1:5]
+
+data_DTM_train = DocumentTermMatrix(corpus_train, control=list(dictionary = five_times_words))
+data_DTM_test = DocumentTermMatrix(corpus_test, control=list(dictionary = five_times_words))
+
+
+```
+
+### Converting document-term matrices
+
+Naive Bayes classification needs present or absent information on each word in a message, so the count information is transformed into *yes* or *no*.
+
+```{r}
+convert_count <- function(x){
+  y <- ifelse(x > 0, 1,0)
+  y <- factor(y, levels=c(0,1), labels=c("No", "Yes"))
+  y
+}
+```
+
+Now we convert the document-term matrices.
+
+```{r}
+data_DTM_train = apply(data_DTM_train, 2, convert_count)
+data_DTM_train[1:4, 30:35]
+
+data_DTM_test = apply(data_DTM_test, 2, convert_count)
+data_DTM_test[1:4, 3:10]
+```
+
+### Naive Bayes Classifier
+
+The Naive Bayes Classifier is created using the training dataset and the following package.
+
+
+```{r}
+library(e1071)
+
+classifier = naiveBayes(data_DTM_train, data_train$label)
+
+```
+
+### Evaluation of the test
+```{r}
+data_DTM_test = as.data.frame(data_DTM_test)
+
+```
+
+```{r}
+
+predictions = predict(classifier, newdata=data_DTM_test)
+
+table(predictions, data_test$label)
+
+```
+
+
+***Results:*** The fake news were classified with 82% of them righ, whereas the real news 80%. These solutions may variate a bit if they are runned again as the sampling data is random and it changes, but all the times the porcentage of fake news classified as fake is higher than the percentage of real news classified as real.
+
+### Bayesian Naive Bayes Classifier
+
+The Bayesian Naive Bayes with uniform priors is equivalent to the frequently called "Laplacian smoothing" (so the probability of a word will no longer be zero even if a word is not present in the training dataset).
+
+```{r}
+B.clas = naiveBayes(data_DTM_train, data_train$label,laplace = 1)
+
+
+B.preds = predict(B.clas, newdata=data_DTM_test)
+table(B.preds, data_test$label)
+```
+
+***Results:*** The fake news were classified with 85% of them righ, whereas the real news 77%. These solutions may variate a bit if they are runned again as the sampling data is random and it changes, but all the times the porcentage of fake news classified as fake is higher than the percentage of real news classified as real.
+
+Though the percentage of fake news classified as fake as increased, the percentage of real news classified as real has decreased. Normally, when we apply laplace the results are  better, but in this case it penalices the filtering of real news, though the great improvement of the classification fake news.
+
+
+## Detect news by its title
+
+In this part, the same procedure as before is done, but using the titles of the news.
+
+### Prepare and Clean the Corpus
+
+```{r}
+library(tm)
+corpus_titles = Corpus(VectorSource(sub_data$title))
+inspect(corpus_titles[1:5])
+
+```
+
+Same as before, the titles are not cleanned.
+
+Firstly, the letters are transformed into lower case.
+
+```{r}
+clean_corpus_titles = tm_map(corpus_titles, tolower)
+
+```
+
+The following steps are to remobe numbers, punctuation, stopwords (as the news are in english, it is specified for english words) and if there are excess of white spaces:
+
+```{r}
+clean_corpus_titles = tm_map(clean_corpus_titles, removeNumbers)
+
+clean_corpus_titles = tm_map(clean_corpus_titles, removePunctuation)
+
+clean_corpus_titles = tm_map(clean_corpus_titles, removeWords,
+                       stopwords("en"))
+
+clean_corpus_titles = tm_map(clean_corpus_titles, stripWhitespace)
+
+inspect(clean_corpus_titles[1:5])
+
+```
+
+As the previous part, the corpus/titles have "weird characters" that need to be removed.
+
+
+```{r}
+toSpace = content_transformer(function(x, pattern) gsub(pattern, " ", x))
+
+clean_corpus_titles = tm_map(clean_corpus_titles, toSpace, "â") 
+clean_corpus_titles = tm_map(clean_corpus_titles, toSpace, "~")
+clean_corpus_titles = tm_map(clean_corpus_titles, toSpace, "€")
+clean_corpus_titles = tm_map(clean_corpus_titles, toSpace, "™")
+clean_corpus_titles = tm_map(clean_corpus_titles, toSpace, "#")
+clean_corpus_titles = tm_map(clean_corpus_titles, toSpace, "@")
+clean_corpus_titles = tm_map(clean_corpus_titles, toSpace, "œ")
+clean_corpus_titles = tm_map(clean_corpus_titles, toSpace, "\u009d") #to remove some \
+clean_corpus_titles = tm_map(clean_corpus_titles, toSpace, "“")
+clean_corpus_titles = tm_map(clean_corpus_titles, toSpace, "”")
+
+inspect(clean_corpus_titles[1:5])
+
+```
+
+Now the corpus looks much better, the only thing that it is needed is to remove the excess of white spaces caused when a "weird character" is removed.
+
+```{r}
+clean_corpus_titles = tm_map(clean_corpus_titles, stripWhitespace)
+inspect(clean_corpus_titles[1:5])
+
+```
+### WordClouds
+
+The indices of fake and real news are the same as the previous part as the same partition of the data is used. Combining the indices and the clean corpus we can have a visualization of the words.
+.
+
+```{r}
+
+wordcloud(clean_corpus_titles[fake_indices], min.freq=500,max.words = 85,scale=c(3.5,0.25),colors=brewer.pal(8, "Dark2"))
+
+wordcloud(clean_corpus_titles[real_indices], min.freq=500,max.words =85,colors=brewer.pal(8, "Dark2"))
+
+
+```
+
+*Note:* I had to put a maximum of words because, unlike the text, in the titles the words are much more repited and a lot of warnings appeared.
+
+### Creating the training and the test
+
+The dataset is divided into train and test (75% trainning and 25% for test) as well as the cleanned corpus (same partitions as the previous part).
+
+```{r}
+
+corpus_train_titles = clean_corpus_titles[train]
+corpus_test_titles = clean_corpus_titles[test]
+
+```
+
+### Calculation of the frequency of the terms
+
+Using DocumentTermMatrix, we create a sparse matrix data structure in which the rows of the matrix refer to document and the columns refer to words.
+
+```{r}
+titles_DTM = DocumentTermMatrix(clean_corpus_titles)
+inspect(titles_DTM[1:4, 3:10])
+```
+
+Now, the matrix is divided into test and training rows:
+
+```{r}
+titles_DTM_train = titles_DTM[train,]
+titles_DTM_test = titles_DTM[test,]
+
+```
+
+### Identify frequently used words
+
+The classifier does not to be worried with words that do not appear more than 5 times.
+
+```{r}
+five_titles_words = findFreqTerms(titles_DTM_train, 5)
+length(five_titles_words)
+
+five_titles_words[1:5]
+
+titles_DTM_train = DocumentTermMatrix(corpus_train_titles, control=list(dictionary = five_titles_words))
+titles_DTM_test = DocumentTermMatrix(corpus_test_titles, control=list(dictionary = five_titles_words))
+
+
+```
+
+### Converting document-term matrices
+
+Now we convert the document-term matrices.
+
+```{r}
+titles_DTM_train = apply(titles_DTM_train, 2, convert_count)
+titles_DTM_train[1:4, 30:35]
+
+titles_DTM_test = apply(titles_DTM_test, 2, convert_count)
+titles_DTM_test[1:4, 3:10]
+```
+
+### Naive Bayes Classifier
+
+The Naive Bayes Classifier is created using the training dataset and the following package.
+
+
+```{r}
+
+classifier = naiveBayes(titles_DTM_train, data_train$label)
+
+```
+
+### Evaluation of the test
+```{r}
+titles_DTM_test = as.data.frame(titles_DTM_test)
+
+```
+
+```{r}
+
+predictions = predict(classifier, newdata=titles_DTM_test)
+
+table(predictions, data_test$label)
+
+```
+***Results:*** The fake news were classified with 79% of them righ, whereas the real news 68%. These solutions may variate a bit if they are runned again as the sampling data is random and it changes, but as same as happens with the bayes classifier with the text news, the porcentage of fake news classified as fake is higher than the percentage of real news classified as real.
+
+
+### Bayesian Naive Bayes Classifier
+
+
+```{r}
+B.titles = naiveBayes(titles_DTM_train, data_train$label,laplace = 1)
+
+
+B.preds_titles = predict(B.titles, newdata=titles_DTM_test)
+table(B.preds_titles, data_test$label)
+```
+
+***Results:*** The fake news were classified with 79% of them righ, whereas the real news 66%. These solutions may variate a bit if they are runned again as the sampling data is random and it changes, but all the times the porcentage of fake news classified as fake is higher than the percentage of real news classified as real.
+
+In this case the laplace has spoiled the results as the percentage of fake news classified as fake is the same as before, and the percentage of real news classified as real has decreased a bit.
+
+## Conclusions about the results
+
+After all the computations, we can conclude that it seems easier to detect fake news than real news. Also, that including a Bayesian Naive Bayes Classifier with laplace of 1 only helps (in small significant way) to the filtering of fake news. As well, though classifing news by title it has been proved to get more or less satisfactory results, using a corpus that it is from the new itself (the text) has given us much better results. 
